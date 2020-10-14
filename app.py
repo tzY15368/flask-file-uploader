@@ -5,8 +5,8 @@
 # Git repository: https://github.com/ngoduykhanh/flask-file-uploader
 # This work based on jQuery-File-Upload which can be found at https://github.com/blueimp/jQuery-File-Upload/
 
-import os
-import PIL
+import os,re
+import PIL,redis
 from PIL import Image
 import simplejson
 import traceback
@@ -29,8 +29,10 @@ IGNORED_FILES = set(['.gitignore'])
 
 bootstrap = Bootstrap(app)
 
+r = redis.Redis(host='localhost',port=6379,decode_responses=True,password='')
 
 def allowed_file(filename):
+    return True
     return '.' in filename and \
         filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -48,15 +50,30 @@ def gen_file_name(filename):
 
     return filename
 
+def get_id(sessionid):
+    uid = r.hmget(sessionid,keys='_id')[0]
+    if not uid:
+        raise Exception("no uid")
+    return uid
 
-def create_thumbnail(image):
+def get_dir_name(uid):
+    dir_name = os.path.join(app.config['UPLOAD_FOLDER'],uid)
+    if not os.path.isdir(dir_name):
+        os.makedirs(dir_name)
+        thumbnail_dir = os.path.join(app.config['THUMBNAIL_FOLDER'],uid)
+        os.makedirs(thumbnail_dir)
+        print('created dir',dir_name)
+    else:
+        print('dir exists.')
+    return dir_name
+def create_thumbnail(image,uid):
     try:
         base_width = 80
-        img = Image.open(os.path.join(app.config['UPLOAD_FOLDER'], image))
+        img = Image.open(os.path.join(app.config['UPLOAD_FOLDER'], uid,image))
         w_percent = (base_width / float(img.size[0]))
         h_size = int((float(img.size[1]) * float(w_percent)))
         img = img.resize((base_width, h_size), PIL.Image.ANTIALIAS)
-        img.save(os.path.join(app.config['THUMBNAIL_FOLDER'], image))
+        img.save(os.path.join(app.config['THUMBNAIL_FOLDER'],uid, image))
 
         return True
 
@@ -64,14 +81,21 @@ def create_thumbnail(image):
         print traceback.format_exc()
         return False
 
+def filename_filter(s):
+    return re.sub('[\/:*?"<>|]','-',s)
+
 
 @app.route("/upload", methods=['GET', 'POST'])
 def upload():
+    uid = get_id(request.cookies.get('SESSIONID'))  
+    if not uid:
+        return '500'
     if request.method == 'POST':
         files = request.files['file']
 
         if files:
-            filename = secure_filename(files.filename)
+            #filename = secure_filename(files.filename)
+            filename = filename_filter(files.filename)
             filename = gen_file_name(filename)
             mime_type = files.content_type
 
@@ -80,12 +104,12 @@ def upload():
 
             else:
                 # save file to disk
-                uploaded_file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                uploaded_file_path = os.path.join(app.config['UPLOAD_FOLDER'], uid,filename)
                 files.save(uploaded_file_path)
 
                 # create thumbnail after saving
                 if mime_type.startswith('image'):
-                    create_thumbnail(filename)
+                    create_thumbnail(filename,uid)
                 
                 # get file size after saving
                 size = os.path.getsize(uploaded_file_path)
@@ -97,12 +121,12 @@ def upload():
 
     if request.method == 'GET':
         # get all file in ./data directory
-        files = [f for f in os.listdir(app.config['UPLOAD_FOLDER']) if os.path.isfile(os.path.join(app.config['UPLOAD_FOLDER'],f)) and f not in IGNORED_FILES ]
+        files = [f for f in os.listdir(os.path.join(app.config['UPLOAD_FOLDER'],uid)) if os.path.isfile(os.path.join(app.config['UPLOAD_FOLDER'],uid,f)) and f not in IGNORED_FILES ]
         
         file_display = []
 
         for f in files:
-            size = os.path.getsize(os.path.join(app.config['UPLOAD_FOLDER'], f))
+            size = os.path.getsize(os.path.join(app.config['UPLOAD_FOLDER'],uid, f))
             file_saved = uploadfile(name=f, size=size)
             file_display.append(file_saved.get_file())
 
@@ -113,8 +137,11 @@ def upload():
 
 @app.route("/delete/<string:filename>", methods=['DELETE'])
 def delete(filename):
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file_thumb_path = os.path.join(app.config['THUMBNAIL_FOLDER'], filename)
+    uid = get_id(request.cookies.get('SESSIONID'))  
+    if not uid:
+        return '500'
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'],uid, filename)
+    file_thumb_path = os.path.join(app.config['THUMBNAIL_FOLDER'],uid, filename)
 
     if os.path.exists(file_path):
         try:
@@ -131,18 +158,34 @@ def delete(filename):
 # serve static files
 @app.route("/thumbnail/<string:filename>", methods=['GET'])
 def get_thumbnail(filename):
-    return send_from_directory(app.config['THUMBNAIL_FOLDER'], filename=filename)
+    uid = get_id(request.cookies.get('SESSIONID'))  
+    if not uid:
+        return '500'
+    return send_from_directory(os.path.join(app.config['THUMBNAIL_FOLDER'],uid), filename=filename)
 
 
 @app.route("/data/<string:filename>", methods=['GET'])
 def get_file(filename):
-    return send_from_directory(os.path.join(app.config['UPLOAD_FOLDER']), filename=filename)
+    uid = get_id(request.cookies.get('SESSIONID'))  
+    if not uid:
+        return '500'
+    return send_from_directory(os.path.join(app.config['UPLOAD_FOLDER'],uid), filename=filename)
+
 
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    try:
+        if request.cookies.get('SESSIONID') == None:
+            raise Exception("no login")
+        uid = get_id(request.cookies.get('SESSIONID'))    
+        print('uid:',uid)
+        dir_name = get_dir_name(uid)
+    except Exception as e:
+        print(e)
+        return redirect("https://www.dutbit.com/userservice/index?target=/files")
     return render_template('index.html')
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True,port=8850,host='127.0.0.1')
