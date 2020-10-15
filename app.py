@@ -16,7 +16,7 @@ from flask_bootstrap import Bootstrap
 from werkzeug import secure_filename
 
 from lib.upload_file import uploadfile
-
+from conf import *
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'hard to guess string'
@@ -29,7 +29,7 @@ IGNORED_FILES = set(['.gitignore'])
 
 bootstrap = Bootstrap(app)
 
-r = redis.Redis(host='localhost',port=6379,decode_responses=True,password='')
+r = redis.Redis(host='localhost',port=6379,decode_responses=True,password=REDIS_PASSWORD)
 
 def allowed_file(filename):
     return True
